@@ -43,7 +43,10 @@ class Design:
     end_rough: bool = True
     detail: str = "MEDIUM"
     max_triangles: int = 400_000
-    arrangement: str = "SINGLE"  # "SINGLE", "STACK" or "POND"
+    carve_rings: bool = False
+    carve_depth: float = 0.05  # model mm
+    carve_count: int = 12
+    arrangement: str = "LOGS"  # "LOGS" (separate logs), "STACK" or "FLOAT" (half logs)
     count: int = 1
     length_var: float = 0.0  # 0 to 1, plus or minus
     diameter_var: float = 0.0  # 0 to 1, plus or minus
@@ -66,8 +69,8 @@ class Design:
         return self.diameter_model if self.size_mode == "MODEL" else self.diameter_real / self.scale_n
 
     def log_count(self) -> int:
-        """How many logs to make: one for a single log."""
-        return 1 if self.arrangement == "SINGLE" else max(1, int(self.count))
+        """How many logs to make."""
+        return max(1, int(self.count))
 
 
 def spacing(d: Design, length: float, diameter: float) -> tuple[float, float]:
@@ -87,19 +90,23 @@ def spacing(d: Design, length: float, diameter: float) -> tuple[float, float]:
     return around, along
 
 
-def make_spec(d: Design, length: float, diameter: float, flare: float, seed: int) -> LogSpec:
-    """A LogSpec for one log of the design at a given size, flare and seed."""
+def make_spec(d: Design, length: float, diameter: float, flare: float, seed: int,
+              top_pct: float | None = None) -> LogSpec:
+    """A LogSpec for one log of the design at a given size, flare, seed and taper."""
     sp = d.sp
     around, along = spacing(d, length, diameter)
+    top = d.top_pct if top_pct is None else top_pct
     return LogSpec(
         scale_n=d.scale_n, length=length, d_butt=diameter,
-        d_top=diameter * max(min(d.top_pct, 100.0), 10.0) / 100.0,
+        d_top=diameter * max(min(top, 100.0), 10.0) / 100.0,
         flare=flare, flare_lobes=sp.flare_lobes, ovality=d.ovality,
         sweep=sp.sweep * d.bow, style=d.style(),
         bark_scale_real=sp.bark_scale_mm * d.bark_scale, bark_stretch=sp.bark_stretch,
         bark_depth_real=sp.bark_depth_mm * d.bark_depth,
         bark_thickness_real=max(sp.bark_thickness_mm, sp.bark_depth_mm * d.bark_depth * 1.2),
         ridge=sp.ridge, furrow=sp.furrow, inner_bark=sp.inner_bark, sapwood=sp.sapwood,
+        heartwood=sp.heartwood, heart_frac=sp.heart_frac, carve_rings=d.carve_rings,
+        carve_depth=d.carve_depth, carve_count=max(2, int(d.carve_count)),
         ring_mm_real=sp.ring_mm, knots_per_m=sp.knots_per_m * d.knots, knot_real=sp.knot_mm,
         stub_real=d.stub_real, damage=d.damage, end_tilt_deg=d.end_tilt, end_rough=d.end_rough,
         around_spacing=around, along_spacing=along, max_triangles=d.max_triangles, seed=seed,
@@ -107,18 +114,26 @@ def make_spec(d: Design, length: float, diameter: float, flare: float, seed: int
 
 
 def log_specs(d: Design, seed: int) -> list[LogSpec]:
-    """One LogSpec per log, each varied by its own random draw from ``seed``."""
+    """One LogSpec per log, each varied by its own random draw from ``seed``.
+
+    With more than one log, each gets its own length and diameter within the
+    variation limits and a slightly different taper; every log also has its
+    own bark, limbs, bow and end cuts (its own seed), and its own roll of the
+    dice for a flared butt.
+    """
     out = []
     multi = d.log_count() > 1
     for i in range(d.log_count()):
         rng = random.Random(seed * 1_000_003 + i * 7919)
-        length, diameter = d.length(), d.diameter()
+        length, diameter, top = d.length(), d.diameter(), d.top_pct
         if multi:
             length *= 1.0 + rng.uniform(-d.length_var, d.length_var)
             diameter *= 1.0 + rng.uniform(-d.diameter_var, d.diameter_var)
+            top = min(100.0, top + rng.uniform(-3.0, 3.0))
         flared = rng.random() < d.flare_chance
         flare = d.sp.flare * d.flare_amount if flared else 0.0
-        out.append(make_spec(d, length, diameter, flare, (seed + i * 104729) % (2**31 - 1) or 1))
+        out.append(make_spec(d, length, diameter, flare, (seed + i * 104729) % (2**31 - 1) or 1,
+                             top))
     return out
 
 
@@ -158,6 +173,7 @@ def summary(d: Design) -> dict:
         "triangles": tris, "bark_depth_model": min(d.sp.bark_depth_mm * d.bark_depth,
                                                     0.85 * bark_real * 2) / n,
         "points_round": n_ar, "rings": n_al,
+        "carve_pitch": max(D / 2 - bark_real / n, 0.0) / max(d.carve_count, 1),
         "flare_real": real_D * (1 + d.sp.flare * d.flare_amount) if d.flare_chance > 0 else 0.0,
     }
 

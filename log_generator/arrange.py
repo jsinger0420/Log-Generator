@@ -1,4 +1,4 @@
-"""Placing several logs: a stacked load for a log car, or logs floating in a pond. No bpy.
+"""Placing several logs: side by side in a row, or a stacked load for a log car. No bpy.
 
 All sizes are model millimetres. Logs lie along X.
 """
@@ -6,7 +6,6 @@ All sizes are model millimetres. Logs lie along X.
 from __future__ import annotations
 
 import math
-import random
 from dataclasses import dataclass
 
 
@@ -49,16 +48,21 @@ def _rest_on_one(c, y, r):
     return zc + math.sqrt(d * d - dy * dy)
 
 
-def stack(radii: list[float], width: float, max_rows: int, overlap: float = 0.0):
+def stack(radii: list[float], width: float, max_rows: int, overlap: float = 0.0,
+          lengths: list[float] | None = None):
     """A pyramid load: logs side by side across ``width``, each row resting in the row below.
 
-    ``radii`` are the logs' mid-length radii; bigger logs go to the bottom.
+    ``radii`` are the logs' mid-length radii. The longest logs (``lengths``)
+    go to the bottom, as loaders built a load; without lengths, the biggest.
     ``overlap`` lets neighbours sink into each other by that much (for a
     load joined into one printable piece). Returns (centres, leftover)
     where ``centres`` maps each placed log's index to its (y, z), z = 0
     being the deck, and ``leftover`` lists indices that didn't fit.
     """
-    order = sorted(range(len(radii)), key=lambda i: -radii[i])
+    if lengths is not None:
+        order = sorted(range(len(radii)), key=lambda i: (-lengths[i], -radii[i]))
+    else:
+        order = sorted(range(len(radii)), key=lambda i: -radii[i])
     eff = [max(radii[i] - overlap / 2.0, 1e-6) for i in range(len(radii))]
     centres: dict[int, tuple[float, float]] = {}
     row: list[tuple[float, float, float]] = []
@@ -133,58 +137,16 @@ def float_depth(radius: float, specific_gravity: float) -> float:
     return radius - 0.5 * (lo + hi)
 
 
-def _segment_distance(p1, p2, q1, q2) -> float:
-    """Shortest distance between 2D segments p1-p2 and q1-q2."""
-    def clamp(v):
-        return max(0.0, min(1.0, v))
-
-    def point_seg(p, a, b):
-        ax, ay = b[0] - a[0], b[1] - a[1]
-        ll = ax * ax + ay * ay
-        t = 0.0 if ll < 1e-12 else clamp(((p[0] - a[0]) * ax + (p[1] - a[1]) * ay) / ll)
-        return math.hypot(p[0] - (a[0] + t * ax), p[1] - (a[1] + t * ay))
-
-    def cross(o, a, b):
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
-    d1, d2 = cross(q1, q2, p1), cross(q1, q2, p2)
-    d3, d4 = cross(p1, p2, q1), cross(p1, p2, q2)
-    if (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0):
-        return 0.0
-    return min(point_seg(p1, q1, q2), point_seg(p2, q1, q2),
-               point_seg(q1, p1, p2), point_seg(q2, p1, p2))
+def row(radii: list[float], gap: float) -> list[float]:
+    """Y positions for logs laid side by side, ``gap`` apart, centred on 0."""
+    ys, y = [], 0.0
+    for r in radii:
+        ys.append(y + r)
+        y += 2 * r + gap
+    shift = (y - gap) / 2.0 if radii else 0.0
+    return [v - shift for v in ys]
 
 
-def pond(lengths: list[float], radii: list[float], area_x: float, area_y: float, seed: int,
-         gap: float = 0.5, tries: int = 4000):
-    """Scatter logs without touching inside an area_x by area_y rectangle centred on 0.
-
-    Logs point mostly the same way, as logs drift in a pond, with some
-    scattered. Returns (placements as (x, y, yaw) per index, indices that
-    didn't fit).
-    """
-    rng = random.Random(seed)
-    placed: list[tuple[int, tuple, tuple, float]] = []
-    out: dict[int, tuple[float, float, float]] = {}
-    missing = []
-    main_dir = rng.uniform(-0.3, 0.3)
-    for i in sorted(range(len(lengths)), key=lambda k: -lengths[k]):
-        L, r = lengths[i], radii[i]
-        ok = False
-        for _ in range(tries):
-            yaw = main_dir + (rng.gauss(0, 0.25) if rng.random() < 0.75 else rng.uniform(-math.pi, math.pi))
-            ex, ey = 0.5 * L * math.cos(yaw), 0.5 * L * math.sin(yaw)
-            hx, hy = abs(ex) + r, abs(ey) + r
-            if 2 * hx > area_x or 2 * hy > area_y:
-                continue
-            cx = rng.uniform(-area_x / 2 + hx, area_x / 2 - hx)
-            cy = rng.uniform(-area_y / 2 + hy, area_y / 2 - hy)
-            a, b = (cx - ex, cy - ey), (cx + ex, cy + ey)
-            if all(_segment_distance(a, b, qa, qb) > r + qr + gap for _j, qa, qb, qr in placed):
-                placed.append((i, a, b, r))
-                out[i] = (cx, cy, yaw)
-                ok = True
-                break
-        if not ok:
-            missing.append(i)
-    return out, missing
+def above_water(radius: float, specific_gravity: float) -> float:
+    """Share of a floating log's diameter above the water (0 to 1), from its green weight."""
+    return (radius + float_depth(radius, specific_gravity)) / (2.0 * radius)

@@ -41,6 +41,7 @@ from .noise import smoothstep
 
 BARK, END_GRAIN = 0, 1
 MAX_RINGS = 22  # most growth rings drawn from pith to bark
+CARVE_POINTS = 8  # end-face rings of points per carved growth ring
 
 
 @dataclass
@@ -65,7 +66,12 @@ class LogSpec:
     furrow: tuple = (0.1, 0.08, 0.06)
     inner_bark: tuple = (0.55, 0.3, 0.2)
     sapwood: tuple = (0.9, 0.8, 0.6)
+    heartwood: tuple = (0.8, 0.5, 0.3)
+    heart_frac: float = 0.7  # heartwood share of the wood radius
     ring_mm_real: float = 3.0
+    carve_rings: bool = False  # cut the growth rings into the sawn ends as shallow grooves
+    carve_depth: float = 0.05  # model mm
+    carve_count: int = 12  # rings carved from pith to bark
     knots_per_m: float = 1.0
     knot_real: float = 45.0  # limb diameter, full size mm
     stub_real: float = 25.0  # longest limb stub left, full size mm
@@ -120,6 +126,8 @@ def resolution(spec: LogSpec) -> tuple[int, int, int]:
     if spec.flare > 0:  # enough rings to shape the flare
         n_al = max(n_al, int(math.ceil(spec.length / (flare_length(spec) / 12))))
     m = int(np.clip(round(0.5 * spec.d_butt / (1.5 * around)), 2, 40))
+    m_carve = int(np.clip(CARVE_POINTS * spec.carve_count, 0, 200)) if spec.carve_rings else 0
+    m = max(m, m_carve)
 
     def tris(a, b, c):
         return 2 * a * b + 2 * a * (2 * c + 2)
@@ -129,7 +137,7 @@ def resolution(spec: LogSpec) -> tuple[int, int, int]:
         f = math.sqrt(spec.max_triangles / total)
         n_ar = max(24, int(n_ar * f))
         n_al = max(8, int(n_al * f))
-        m = max(2, int(m * f))
+        m = max(2, int(m * f), int(m_carve * 0.7))  # keep carved rings sharp
     return n_ar, n_al, m
 
 
@@ -311,8 +319,11 @@ def build(spec: LogSpec) -> LogMesh:
 
     # Real growth rings are far too fine to see on a model log (an HO log has
     # 100 or more across a few millimetres), so they are drawn no finer than
-    # MAX_RINGS across the radius, as a modeller would paint them.
+    # MAX_RINGS across the radius, as a modeller would paint them. Carved
+    # rings use their own, coarser count, and the drawn rings follow them.
     ring_model_wood = max(spec.model(spec.ring_mm_real), 0.5 * spec.d_butt / MAX_RINGS)
+    heart = np.asarray(spec.heartwood, dtype=np.float64)
+    sap = np.asarray(spec.sapwood, dtype=np.float64)
     rough_amp = min(spec.model(4.0), 0.3 * L / n_al) if spec.end_rough else 0.0
     pith_dir = rng.uniform(0, 2 * np.pi)
     pith_off = rng.uniform(0.0, 0.12)
@@ -353,12 +364,36 @@ def build(spec: LogSpec) -> LogMesh:
         # The bark seen in the cut: outer bark colour at the surface shading to
         # the reddish inner bark where it meets the wood.
         c[:n_ar] = 0.6 * np.asarray(spec.inner_bark) + 0.4 * np.asarray(spec.furrow)
-        c[n_ar:] = np.asarray(spec.sapwood)
-        cols.append(c)
         dy, dz = ry - py, rz - pz
+        dist = np.hypot(dy, dz)
         norm_y, norm_z = dy / max(rw_mean, 1e-9), dz / max(rw_mean, 1e-9)
         uvn_l.append(np.column_stack((norm_y, norm_z)))
-        uvr_l.append(np.column_stack((dy, dz)) / max(ring_model_wood, 1e-9))
+
+        # Growth rings: years from the pith, wobbled so they aren't perfect circles.
+        ring_w = rw_mean / spec.carve_count if spec.carve_rings else ring_model_wood
+        years = dist / max(ring_w, 1e-9)
+        q = np.column_stack((norm_y * 2.5, norm_z * 2.5, np.full_like(ry, 3.1 * end + 0.7)))
+        years_w = np.maximum(years + 0.45 * noise.fbm(q, 2, seed + 701 + end) * np.minimum(years, 1.0), 0.0)
+        safe = np.where(dist > 1e-12, dist, 1.0)
+        uvr_l.append(np.column_stack((dy, dz)) * (years_w / safe)[:, None])
+        frac = years_w % 1.0
+        late = smoothstep(0.5, 0.92, frac)
+        in_heart = 1.0 - smoothstep(spec.heart_frac - 0.04, spec.heart_frac + 0.04,
+                                    dist / max(rw_mean, 1e-9))
+        wood_c = heart[None, :] * in_heart[:, None] + sap[None, :] * (1.0 - in_heart[:, None])
+        c[n_ar:] = (wood_c * (1.0 - 0.28 * late[:, None]))[n_ar:]
+        cols.append(c)
+        if spec.carve_rings and spec.carve_depth > 0:
+            # Weathered end grain: soft earlywood wears into grooves, latewood stands
+            # as ridges. The wood edge ring stays on the sawn face.
+            # Ridges (latewood) round frac = 1, eased on both sides so the mesh can follow.
+            groove = (1.0 - smoothstep(0.6, 0.85, frac)) * smoothstep(0.0, 0.22, frac)
+            fade = smoothstep(0.0, 0.6, years_w)
+            push = spec.carve_depth * groove * fade
+            push[:n_ar] = 0.0
+            rx = rx + (push if end == 0 else -push)
+            cap_verts = np.column_stack((rx, ry, rz))
+            verts[-1] = cap_verts
 
         cap_t, cap_m = [], []
         jj = np.arange(n_ar)

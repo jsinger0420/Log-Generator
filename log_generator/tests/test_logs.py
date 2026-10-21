@@ -175,6 +175,24 @@ class TestLogMesh(unittest.TestCase):
         self.assertEqual(m.uv_norm.shape, (n, 2))
         self.assertTrue(((m.colours >= 0) & (m.colours <= 1)).all())
 
+    def test_carved_rings(self):
+        """Carved rings stay closed, add end-face detail and dent the end faces inward."""
+        plain = logmesh.build(small_spec(end_rough=False, end_tilt_deg=0.0))
+        carved = logmesh.build(small_spec(end_rough=False, end_tilt_deg=0.0, carve_rings=True,
+                                          carve_count=10, carve_depth=0.05))
+        self.assertEqual(logmesh.open_edges(carved.triangles), 0)
+        self.assertGreater(len(carved.triangles), len(plain.triangles))
+        x = carved.vertices[:, 0]
+        self.assertGreaterEqual(x.min(), -1e-9)  # grooves go into the butt, not out
+        self.assertTrue(((x > 0.01) & (x < 0.06)).any())
+
+    def test_rings_uv_counts_rings(self):
+        """The Rings UV gives about the carved ring count at the bark."""
+        spec = small_spec(carve_rings=True, carve_count=10)
+        m = logmesh.build(spec)
+        years = np.hypot(m.uv_rings[:, 0], m.uv_rings[:, 1])
+        self.assertTrue(8.0 < years.max() < 13.0)
+
     def test_seed_repeats(self):
         """The same seed builds the same log; another seed a different one."""
         a = logmesh.build(small_spec(seed=3))
@@ -205,8 +223,8 @@ class TestDesign(unittest.TestCase):
         self.assertAlmostEqual(spec.d_top, 5.0 * d.top_pct / 100)
 
     def test_variation(self):
-        """Loads vary each log within the limits; a single log is exact."""
-        d = design.Design(arrangement="STACK", count=20, length_var=0.1, diameter_var=0.2)
+        """Several logs vary within the limits; a single log is exact."""
+        d = design.Design(arrangement="LOGS", count=20, length_var=0.1, diameter_var=0.2)
         specs = design.log_specs(d, 9)
         self.assertEqual(len(specs), 20)
         ls = [s.length for s in specs]
@@ -220,7 +238,7 @@ class TestDesign(unittest.TestCase):
     def test_flare_chance(self):
         """0% flares no logs, 100% flares them all."""
         for chance, want in ((0.0, 0), (1.0, 30)):
-            d = design.Design(arrangement="POND", count=30, flare_chance=chance)
+            d = design.Design(arrangement="FLOAT", count=30, flare_chance=chance)
             self.assertEqual(sum(s.flare > 0 for s in design.log_specs(d, 2)), want)
 
     def test_errors(self):
@@ -237,7 +255,7 @@ class TestDesign(unittest.TestCase):
 
 
 class TestArrange(unittest.TestCase):
-    """Stacked loads and log ponds."""
+    """Car loads, rows and floating."""
 
     def test_stack_fits_and_rests(self):
         """Bottom row within the width; upper logs touch two below; no overlaps."""
@@ -266,21 +284,25 @@ class TestArrange(unittest.TestCase):
         self.assertLess(arrange.float_depth(5.0, 0.9), 0.0)
         self.assertGreater(arrange.float_depth(5.0, 2.0), -5.0)  # sinkers still show
 
-    def test_pond(self):
-        """Logs stay inside the area and don't touch."""
-        lengths, radii = [60.0] * 8, [4.0] * 8
-        spots, missing = arrange.pond(lengths, radii, 400, 200, 5)
-        self.assertEqual(len(spots) + len(missing), 8)
-        segs = []
-        for i, (x, y, yaw) in spots.items():
-            ex, ey = 30 * math.cos(yaw), 30 * math.sin(yaw)
-            for px, py in ((x - ex, y - ey), (x + ex, y + ey)):
-                self.assertLessEqual(abs(px), 200)
-                self.assertLessEqual(abs(py), 100)
-            segs.append(((x - ex, y - ey), (x + ex, y + ey)))
-        for a in range(len(segs)):
-            for b in range(a + 1, len(segs)):
-                self.assertGreater(arrange._segment_distance(*segs[a], *segs[b]), 8.0)
+    def test_stack_longest_at_bottom(self):
+        """The longest logs go in the bottom row."""
+        radii = [5.0] * 6
+        lengths = [50, 90, 60, 100, 70, 80]
+        centres, left = arrange.stack(radii, 31.0, 3, lengths=lengths)
+        bottom = sorted(i for i, (_y, z) in centres.items() if abs(z - 5.0) < 1e-9)
+        self.assertEqual(bottom, [1, 3, 5])  # 90, 100 and 80 long
+
+    def test_row(self):
+        """Logs in a row don't touch and are centred."""
+        ys = arrange.row([2.0, 3.0, 4.0], 1.0)
+        self.assertAlmostEqual(ys[1] - ys[0], 2.0 + 3.0 + 1.0)
+        self.assertAlmostEqual(ys[2] - ys[1], 3.0 + 4.0 + 1.0)
+        self.assertAlmostEqual((ys[0] - 2.0 + ys[2] + 4.0) / 2, 0.0)
+
+    def test_above_water(self):
+        """Light species float high, heavy ones low."""
+        self.assertGreater(arrange.above_water(5, 0.43), arrange.above_water(5, 0.9))
+        self.assertAlmostEqual(arrange.above_water(5, 0.5), 0.5, places=5)
 
 
 if __name__ == "__main__":

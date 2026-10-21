@@ -107,12 +107,12 @@ class LOGGEN_OT_generate(_BuildOperator, bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _build(self, context, progress):
-        """Add one new log, load or pond."""
+        """Add new logs, a car load or half logs."""
         return [build.generate(context, progress)]
 
 
 class LOGGEN_OT_regenerate(_BuildOperator, bpy.types.Operator):
-    """Rebuild the selected logs, loads or ponds in place with the panel's current settings. Each keeps its name, place and collection. Uses a new random seed unless Lock Seed is on"""
+    """Rebuild the selected logs or car loads in place with the panel's current settings. Each keeps its name, place and collection. Uses a new random seed unless Lock Seed is on"""
 
     bl_idname = "log_generator.regenerate"
     bl_label = "Regenerate Selected"
@@ -121,7 +121,7 @@ class LOGGEN_OT_regenerate(_BuildOperator, bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        """Needs a selected log, load or pond."""
+        """Needs selected logs made by Log Generator."""
         if not build.selected_roots(context):
             cls.poll_message_set("Select logs made by Log Generator first")
             return False
@@ -169,7 +169,7 @@ class LOGGEN_OT_load_settings(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        """Needs a selected log, load or pond."""
+        """Needs selected logs made by Log Generator."""
         if cls._source(context) is None:
             cls.poll_message_set("Select logs made by Log Generator first")
             return False
@@ -220,23 +220,23 @@ class LOGGEN_OT_typical_size(bpy.types.Operator):
 
 
 class LOGGEN_OT_export_stl(bpy.types.Operator, ExportHelper):
-    """Export the selected logs, loads or ponds as STL files in millimetres (water surfaces are left out)"""
+    """Export the selected logs as STL files in millimetres. Selecting a group (its empty) exports all its logs; selecting single logs in a group exports just those"""
 
     bl_idname = "log_generator.export_stl"
     bl_label = "Export STL"
     filename_ext = ".stl"
     filter_glob: StringProperty(default="*.stl", options={"HIDDEN"})
-    one_file_each: BoolProperty(
-        name="One File Each",
-        description="Write each selected log, load or pond to its own file, named after the "
-                    "file name chosen plus the object's name",
-        default=False,
+    one_file_per_log: BoolProperty(
+        name="One File per Log",
+        description="Write each log to its own file, named after the file name chosen plus "
+                    "the log's name. A joined car load is one log here",
+        default=True,
     )
 
     @classmethod
     def poll(cls, context):
         """Only available when logs made by Log Generator are selected."""
-        return bool(build.selected_roots(context))
+        return bool(build.selected_logs(context))
 
     def invoke(self, context, event):
         """Open the file browser on the default file name, next to the .blend file."""
@@ -246,27 +246,25 @@ class LOGGEN_OT_export_stl(bpy.types.Operator, ExportHelper):
         return {"RUNNING_MODAL"}
 
     def execute(self, context):
-        """Write the selected logs to the file, or each root to its own file."""
-        roots = build.selected_roots(context)
-        groups = [(r, build.export_objects(r)) for r in roots]
-        groups = [(r, objs) for r, objs in groups if objs]
-        if not groups:
+        """Write the selected logs to the file, or each log to its own file."""
+        logs = build.selected_logs(context)
+        if not logs:
             self.report({"ERROR"}, "Nothing to export: select logs made by Log Generator.")
             return {"CANCELLED"}
         try:
-            if not self.one_file_each:
-                build.export_stl(context, [o for _r, objs in groups for o in objs], self.filepath)
+            if not self.one_file_per_log or len(logs) == 1:
+                build.export_stl(context, logs, self.filepath)
                 written = os.path.basename(self.filepath)
             else:
                 stem, ext = os.path.splitext(self.filepath)
-                for root, objs in groups:
-                    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in root.name)
-                    build.export_stl(context, objs, f"{stem}_{safe}{ext}")
-                written = f"{len(groups)} files next to {os.path.basename(self.filepath)}"
+                for obj in logs:
+                    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in obj.name)
+                    build.export_stl(context, [obj], f"{stem}_{safe}{ext}")
+                written = f"{len(logs)} files next to {os.path.basename(self.filepath)}"
         except RuntimeError as err:
             self.report({"ERROR"}, f"Export failed: {err}")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Exported {len(groups)} to {written}")
+        self.report({"INFO"}, f"Exported {len(logs)} log(s) to {written}")
         return {"FINISHED"}
 
 

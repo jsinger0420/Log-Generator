@@ -3,9 +3,10 @@
 Builds sawn logs of a chosen species, cut to length with the limbs
 trimmed off, with realistic bark, taper, an optional flared butt, and end
 grain on the cut faces. Sizes are real-world dimensions plus a model
-railroad scale, or the model's own size. Logs come singly, as a stacked
-load for a log car or mill deck, or floating in a log pond, and export as
-STL in millimetres for 3D printing.
+railroad scale, or the model's own size. Make one log or many (each a
+little different and its own object), a stacked load for a log car, or
+half logs cut at the waterline to stand on painted water. Everything
+exports as STL in millimetres for 3D printing.
 
 The shapes, bark, species and arrangements (scales.py, species.py,
 noise.py, bark.py, logmesh.py, arrange.py, design.py) are plain Python

@@ -101,19 +101,27 @@ class LOGGEN_PT_main(_Panel, bpy.types.Panel):
             box.label(text=f"Flared butts up to {_proto_text(m['flare_real'], s)} across")
         box.label(text=f"Bark relief {m['bark_depth_model']:.3f} mm in the model")
         box.label(text=f"About {m['triangles']:,} triangles per log")
+        if s.carve_rings:
+            row = box.row()
+            row.alert = m["carve_pitch"] < 0.15
+            row.label(text=f"Carved rings {m['carve_pitch']:.2f} mm apart, "
+                           f"{s.carve_depth:.3f} mm deep",
+                      icon="ERROR" if m["carve_pitch"] < 0.15 else "NONE")
+        r = 0.25 * (m["diameter"] + m["top"])
         if s.arrangement == "STACK":
-            r = 0.25 * (m["diameter"] + m["top"])
-            cap = arrange.capacity(s.model_mm("load_width"), r, s.max_rows)
+            width = s.car_width_mm()
+            cap = arrange.capacity(width, r, s.max_rows)
             row = box.row()
             row.alert = s.log_count > cap
-            row.label(text=f"Load {s.model_mm('load_width'):.1f} mm wide holds about {cap} "
-                           f"logs of this size", icon="ERROR" if s.log_count > cap else "NONE")
-        elif s.arrangement == "POND":
-            r = 0.25 * (m["diameter"] + m["top"])
-            above = arrange.float_depth(r, d.sp.specific_gravity)
-            sink = " (a sinker: heavier than water)" if d.sp.specific_gravity >= 1.0 else ""
-            box.label(text=f"Floats with {max(r + above, 0):.2f} of {2 * r:.2f} mm "
-                           f"above water{sink}")
+            row.label(text=f"Car {width:.1f} mm wide holds about {cap} logs of this size",
+                      icon="ERROR" if s.log_count > cap else "NONE")
+        elif s.arrangement == "FLOAT":
+            f = s.above_water(r)
+            note = ""
+            if s.float_mode == "SPECIES" and d.sp.specific_gravity >= 1.0:
+                note = " (green logs of this species barely float)"
+            box.label(text=f"Half log stands {2 * r * f:.2f} mm of {2 * r:.2f} mm "
+                           f"({f * 100:.0f}%) above the water{note}")
         if m["bark_depth_model"] < 0.03 and d.style() not in ("SMOOTH", "BIRCH"):
             box.label(text="Bark relief is too fine to print; it shows in colour only.",
                       icon="ERROR")
@@ -174,6 +182,16 @@ class LOGGEN_PT_shape(_Panel, bpy.types.Panel):
         col.separator()
         col.prop(s, "end_tilt")
         col.prop(s, "end_rough")
+        col.separator()
+        col.prop(s, "carve_rings")
+        sub = col.column()
+        sub.enabled = s.carve_rings
+        sub.prop(s, "carve_count")
+        sub.prop(s, "carve_depth", text="Groove Depth (mm)")
+        hint = col.column()
+        hint.scale_y = 0.8
+        hint.label(text="Rings show in Material Preview and Rendered", icon="INFO")
+        hint.label(text="view, or Solid view with Color: Attribute.")
 
 
 class LOGGEN_PT_bark(_Panel, bpy.types.Panel):
@@ -193,26 +211,32 @@ class LOGGEN_PT_bark(_Panel, bpy.types.Panel):
 
 
 class LOGGEN_PT_arrange(_Panel, bpy.types.Panel):
-    """One log, a stacked load, or a log pond"""
+    """Separate logs, a car load, or floating half logs"""
 
     bl_label = "Arrangement"
     bl_parent_id = "LOGGEN_PT_main"
 
     def draw(self, context):
-        """Arrangement and its settings."""
+        """Arrangement, how many logs and how they vary, then the arrangement's settings."""
         s = _s(context)
         col = self.layout.column()
         col.prop(s, "arrangement", text="")
-        if s.arrangement == "SINGLE":
-            hint = col.column()
-            hint.scale_y = 0.8
-            hint.label(text="Lies along X, resting on the 3D cursor.", icon="INFO")
-            return
         col.prop(s, "log_count")
-        col.prop(s, "length_var")
-        col.prop(s, "diameter_var")
+        sub = col.column()
+        sub.enabled = s.log_count > 1
+        sub.prop(s, "length_var")
+        sub.prop(s, "diameter_var")
         if s.arrangement == "STACK":
-            col.prop(s, "load_width", text=f"Load Width ({_lu(s)})")
+            col.separator()
+            row = col.row(align=True)
+            row.prop(s, "load_width_mode", expand=True)
+            if s.load_width_mode == "PROTOTYPE":
+                col.prop(s, "load_width", text=f"Car Width ({_lu(s)})")
+            else:
+                u = "mm" if s.model_units == "MM" else "in"
+                row = col.row(align=True)
+                row.prop(s, "load_width_model", text=f"Car Width ({u})")
+                row.prop(s, "model_units", expand=True)
             col.prop(s, "max_rows")
             col.prop(s, "end_stagger")
             col.prop(s, "alternate_butts")
@@ -220,13 +244,26 @@ class LOGGEN_PT_arrange(_Panel, bpy.types.Panel):
             sub = col.column()
             sub.enabled = s.join_load
             sub.prop(s, "overlap", text="Overlap (mm)")
-        else:
-            col.prop(s, "pond_length", text=f"Area Length ({_lu(s)})")
-            col.prop(s, "pond_width", text=f"Area Width ({_lu(s)})")
-            col.prop(s, "water_plane")
             hint = col.column()
             hint.scale_y = 0.8
-            hint.label(text="The 3D cursor's height is the waterline.", icon="INFO")
+            hint.label(text="Longest logs go on the bottom.", icon="INFO")
+        elif s.arrangement == "FLOAT":
+            col.separator()
+            col.prop(s, "float_mode", expand=True)
+            sub = col.column()
+            sub.enabled = s.float_mode == "CUSTOM"
+            sub.prop(s, "float_above")
+            hint = col.column()
+            hint.scale_y = 0.8
+            hint.label(text="Flat bottom stands on the 3D cursor;", icon="INFO")
+            hint.label(text="glue it to water painted on a flat surface.")
+        else:
+            hint = col.column()
+            hint.scale_y = 0.8
+            hint.label(text="Side by side along Y, resting on the 3D cursor.", icon="INFO")
+        if s.log_count > 1 and s.arrangement != "STACK" or (s.arrangement == "STACK"
+                                                             and not s.join_load):
+            hint.label(text="Each log is its own object.")
 
 
 class LOGGEN_PT_build(_Panel, bpy.types.Panel):

@@ -1,20 +1,21 @@
 """Building log objects in the scene, and exporting them.
 
 1. Turn the panel's settings into one LogSpec per log (design.py), each
-   varied by its own random draw.
+   log varied by its own random draw.
 2. Build each log's mesh (logmesh.py) and make it a Blender object with
    its bark colours, end grain UV maps and two materials (materials.py).
 3. Arrange them:
-   - Single Log: one log lying on the 3D cursor.
-   - Stacked Load: a pyramid of logs on an empty at the 3D cursor (the
-     deck of the car), optionally joined into one printable solid.
-   - Log Pond: logs floating at the 3D cursor's height, scattered over the
-     area, each as deep as its species floats, optionally with a water
-     surface.
+   - Separate Logs: side by side in a row at the 3D cursor, resting on it,
+     each its own object.
+   - Car Load: a pyramid on an empty at the 3D cursor (the car deck),
+     longest logs at the bottom, optionally joined into one printable solid.
+   - Floating Half Logs: each log cut flat at its waterline and closed, the
+     flat face standing on the 3D cursor, so it can be glued to a surface
+     painted as water. Side by side, each its own object.
 
-The generated object (the log, or the empty holding a load or a pond) is
-the "root". It stores the settings it was built with (``SETTINGS_KEY``),
-so Load Settings From Selected can bring them back and Regenerate Selected
+The generated object (a lone log, or the empty holding several) is the
+"root". It stores the settings it was built with (``SETTINGS_KEY``), so
+Load Settings From Selected can bring them back and Regenerate Selected
 can rebuild it in place, as in Tie Strip Generator.
 
 Every Generate adds new objects to the active collection and leaves earlier
@@ -36,14 +37,17 @@ import numpy as np
 
 from . import arrange, design, logmesh, materials, scales
 
-TAG = "log_generator"  # custom property marking a root (a log, load or pond)
-PART_TAG = "log_generator_part"  # on logs and water belonging to a load or pond: "LOG" or "WATER"
+TAG = "log_generator"  # custom property marking a root (a log, or the empty holding several)
+PART_TAG = "log_generator_part"  # on each log under a root: "LOG"
 SETTINGS_KEY = "log_generator_settings"
 SETTINGS_META_KEY = "log_generator_settings_meta"
 SETTINGS_FORMAT = 1
 SEED_LIMIT = 2**31
+TEMP_NAME = "_log_generator_new"  # logs are named this until they are placed
 
-NAMES = {"SINGLE": "Log", "STACK": "LogLoad", "POND": "LogPond"}
+# (name of a lone log, name of the empty holding several)
+NAMES = {"LOGS": ("Log", "Logs"), "STACK": ("LogLoad", "LogLoad"),
+         "FLOAT": ("HalfLog", "FloatingLogs")}
 
 
 class BuildError(RuntimeError):
@@ -70,12 +74,12 @@ def set_scene_millimetres(scene) -> None:
 # ---- finding generated objects ----
 
 def is_root(obj) -> bool:
-    """True when ``obj`` is a log, load or pond made by Generate."""
+    """True when ``obj`` is a log, or the empty holding several, made by Generate."""
     return obj is not None and bool(obj.get(TAG))
 
 
 def is_part(obj) -> bool:
-    """True when ``obj`` is a log or water surface belonging to a load or pond."""
+    """True when ``obj`` is one of several logs held by a root."""
     return obj is not None and bool(obj.get(PART_TAG))
 
 
@@ -101,6 +105,22 @@ def parts_of(root) -> list:
     if root.type == "MESH" and not any(is_part(c) for c in root.children):
         return [root]
     return [c for c in root.children if is_part(c)]
+
+
+def selected_logs(context) -> list:
+    """The log meshes to export: selected logs, and every log of a selected group's empty."""
+    out = []
+    for o in context.selected_objects:
+        if is_part(o) and is_root(o.parent):
+            objs = [o] if o.type == "MESH" and o.get(PART_TAG) != "WATER" else []
+        elif is_root(o):
+            objs = export_objects(o)
+        else:
+            objs = []
+        for obj in objs:
+            if obj not in out:
+                out.append(obj)
+    return out
 
 
 def stored_settings(root) -> tuple[dict, dict]:
@@ -222,6 +242,35 @@ def _union(base, others) -> tuple[str, int]:
     return solver, _clean(base.data)
 
 
+def cut_at_waterline(mesh, z: float) -> int:
+    """Cut a log mesh flat at height ``z``, keep the part above and close the cut.
+
+    The flat face gets the bark material (it stands on the painted water
+    and is never seen). Returns the open-edge count (0 when closed).
+    """
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        geom = bm.verts[:] + bm.edges[:] + bm.faces[:]
+        bmesh.ops.bisect_plane(bm, geom=geom, dist=1e-7, plane_co=(0.0, 0.0, z),
+                               plane_no=(0.0, 0.0, 1.0), clear_inner=True)
+        boundary = [e for e in bm.edges if e.is_boundary]
+        filled = bmesh.ops.holes_fill(bm, edges=boundary, sides=0)["faces"]
+        if filled:
+            tri = bmesh.ops.triangulate(bm, faces=filled, quad_method="BEAUTY",
+                                        ngon_method="BEAUTY")["faces"]
+            for f in tri:
+                f.material_index = logmesh.BARK
+                f.smooth = False
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+        open_edges = sum(1 for e in bm.edges if not e.is_manifold)
+        bm.to_mesh(mesh)
+    finally:
+        bm.free()
+    mesh.update()
+    return open_edges
+
+
 # ---- generate ----
 
 def generate(context, progress=None) -> BuildResult:
@@ -242,83 +291,95 @@ def generate(context, progress=None) -> BuildResult:
     set_scene_millimetres(scene)
     coll = context.collection or scene.collection
     sp = d.sp
+    arrangement = d.arrangement if d.arrangement in NAMES else "LOGS"
 
     # ---- arrangement first, so logs that don't fit aren't built ----
     radii = [design.mid_radius(spec) for spec in specs]
     lengths = [spec.length for spec in specs]
     rng = random.Random(seed + 77)
     places: dict[int, arrange.Placement] = {}
-    if d.arrangement == "STACK":
+    if arrangement == "STACK":
         overlap = s.overlap if s.join_load else 0.0
-        centres, left = arrange.stack(radii, s.model_mm("load_width"), s.max_rows, overlap)
+        centres, left = arrange.stack(radii, s.car_width_mm(), s.max_rows, overlap, lengths)
         for k, i in enumerate(sorted(centres, key=lambda i: (centres[i][1], centres[i][0]))):
             y, z = centres[i]
             dx = rng.uniform(-1, 1) * s.end_stagger / 100.0 * lengths[i]
             places[i] = arrange.Placement(dx, y, z, roll=rng.uniform(0, 2 * math.pi),
                                           flip=s.alternate_butts and k % 2 == 1)
         if left:
-            warnings.append(f"{len(left)} of {len(specs)} logs didn't fit the load; widen the "
-                            "load or allow more rows.")
-    elif d.arrangement == "POND":
-        spots, left = arrange.pond(lengths, radii, s.model_mm("pond_length"),
-                                   s.model_mm("pond_width"), seed)
-        for i, (x, y, yaw) in spots.items():
-            z = arrange.float_depth(radii[i], sp.specific_gravity)
-            places[i] = arrange.Placement(x, y, z, yaw=yaw, roll=rng.uniform(0, 2 * math.pi),
-                                          flip=rng.random() < 0.5)
-        if left:
-            warnings.append(f"{len(left)} of {len(specs)} logs didn't fit in the pond area; make "
-                            "the area bigger or use fewer logs.")
+            warnings.append(f"{len(left)} of {len(specs)} logs didn't fit on the car; widen it "
+                            "or allow more rows.")
     else:
-        places[0] = arrange.Placement(0.0, 0.0, 0.0)
+        # Side by side, a gap of about half a log between them.
+        gap = max(0.5 * max(radii), 1.0)
+        for i, y in enumerate(arrange.row(radii, gap)):
+            places[i] = arrange.Placement(0.0, y, 0.0)
 
     # ---- build the logs ----
     logs = []
     total = len(places)
     tri_count = 0
+    lone, group = NAMES[arrangement]
+    above_pct = []
     for done, i in enumerate(sorted(places)):
         spec = specs[i]
         lm = logmesh.build(spec)
         _centre_along(lm, spec.length)
-        tri_count += len(lm.triangles)
-        mesh = log_mesh(NAMES["SINGLE"], lm, d.species)
-        obj = _new_object(NAMES["SINGLE"], mesh, coll)
+        mesh = log_mesh(TEMP_NAME, lm, d.species)
+        if arrangement == "FLOAT":
+            f = s.above_water(radii[i])
+            above_pct.append(f)
+            cut_z = radii[i] * (1.0 - 2.0 * f)
+            open_edges = cut_at_waterline(mesh, cut_z)
+            if open_edges:
+                warnings.append(f"Half log {done + 1} has {open_edges} open edges and may not "
+                                "slice cleanly.")
+            mesh.transform(_translation(0.0, 0.0, -cut_z))
+            base_z = 0.0
+        else:
+            base_z = -float(lm.vertices[:, 2].min())  # rest on the ground
+        tri_count += len(mesh.polygons)
+        obj = _new_object(TEMP_NAME, mesh, coll)  # named once it's placed
         obj["log_length_mm"] = round(spec.length, 3)
         obj["log_diameter_mm"] = round(spec.d_butt, 3)
         obj["log_flared"] = spec.flare > 0
-        logs.append((i, obj, lm))
+        logs.append((i, obj, base_z))
         if progress:
             progress(done + 1, total + 1)
 
     # ---- place them ----
     cursor = scene.cursor.location.copy()
     info = {"logs": len(logs), "triangles": tri_count, "seed": seed}
-    if d.arrangement == "SINGLE":
-        _i, root, lm = logs[0]
-        root.location = (cursor.x, cursor.y, cursor.z - float(lm.vertices[:, 2].min()))
+    if len(logs) == 1 and arrangement != "STACK":
+        _i, root, base_z = logs[0]
+        root.name = root.data.name = lone
+        root.location = (cursor.x, cursor.y, cursor.z + base_z)
     else:
-        root = bpy.data.objects.new(NAMES[d.arrangement], None)
+        root = bpy.data.objects.new(group, None)
         root.empty_display_type = "PLAIN_AXES"
         root.empty_display_size = max(radii) * 2 if radii else 5.0
         coll.objects.link(root)
         root.location = cursor
-        for i, obj, _lm in logs:
+        for n, (i, obj, base_z) in enumerate(logs):
             p = places[i]
             obj.parent = root
-            obj.location = (p.x, p.y, p.z)
-            obj.rotation_euler = (p.roll, 0.0, p.yaw + (math.pi if p.flip else 0.0))
+            if arrangement == "STACK":
+                obj.location = (p.x, p.y, p.z)
+                obj.rotation_euler = (p.roll, 0.0, math.pi if p.flip else 0.0)
+            else:
+                obj.location = (p.x, p.y, base_z)
             obj[PART_TAG] = "LOG"
-            obj.name = f"{root.name} Log"
-        if d.arrangement == "STACK" and s.join_load and len(logs) > 1:
+            obj.name = obj.data.name = f"{root.name} {n + 1:02d}"
+        if arrangement == "STACK" and s.join_load and len(logs) > 1:
             context.view_layer.update()
             base = logs[0][1]
-            for _i, o, _lm in logs[1:]:
+            for _i, o, _z in logs[1:]:
                 o.parent = None
                 o.matrix_world = root.matrix_world @ o.matrix_basis
             mw = base.matrix_world.copy()
             base.parent = None
             base.matrix_world = mw
-            solver, open_edges = _union(base, [o for _i, o, _lm in logs[1:]])
+            solver, open_edges = _union(base, [o for _i, o, _z in logs[1:]])
             base.parent = root
             base.matrix_parent_inverse = root.matrix_world.inverted()
             base.name = f"{root.name} Joined"
@@ -328,15 +389,8 @@ def generate(context, progress=None) -> BuildResult:
                                 "slice cleanly.")
             tri_count = len(base.data.polygons)
             info["triangles"] = tri_count
-        if d.arrangement == "POND" and s.water_plane:
-            w, l = s.model_mm("pond_width"), s.model_mm("pond_length")
-            verts = np.array([[-l / 2, -w / 2, 0], [l / 2, -w / 2, 0], [l / 2, w / 2, 0],
-                              [-l / 2, w / 2, 0]], dtype=np.float64)
-            wm = mesh_from_arrays("Water", verts, np.array([[0, 1, 2], [0, 2, 3]]))
-            wm.materials.append(materials.water_material())
-            water = _new_object(f"{root.name} Water", wm, coll)
-            water.parent = root
-            water[PART_TAG] = "WATER"
+    if above_pct:
+        info["above_water"] = (min(above_pct), max(above_pct))
 
     # ---- record and report ----
     if s.seed != seed:
@@ -348,7 +402,8 @@ def generate(context, progress=None) -> BuildResult:
     root[SETTINGS_META_KEY] = json.dumps({"format": SETTINGS_FORMAT, "log_preset": s.log_preset,
                                           "log_modified": bool(s.log_modified)})
     info["seconds"] = time.perf_counter() - started
-    what = f"{len(logs)} {sp.name} log" + ("s" if len(logs) != 1 else "")
+    what = f"{len(logs)} {sp.name} " + ("half log" if arrangement == "FLOAT" else "log") \
+        + ("s" if len(logs) != 1 else "")
     s.last_report = (f"{root.name} (seed {seed}): {what}, {tri_count:,} triangles, "
                      f"{info['seconds']:.1f} s.")
     for o in context.selected_objects:
@@ -356,6 +411,12 @@ def generate(context, progress=None) -> BuildResult:
     root.select_set(True)
     context.view_layer.objects.active = root
     return BuildResult(root, warnings, info)
+
+
+def _translation(x: float, y: float, z: float):
+    """A translation matrix."""
+    from mathutils import Matrix
+    return Matrix.Translation((x, y, z))
 
 
 def _remove_tree(obj) -> None:
@@ -399,9 +460,10 @@ def regenerate(context, old, progress=None) -> BuildResult:
             child.parent = new
     _remove_tree(old)
     new.name = name
-    for child in new.children:
-        if is_part(child):
-            child.name = f"{new.name} {'Water' if child.get(PART_TAG) == 'WATER' else 'Log'}"
+    parts = sorted((c for c in new.children if is_part(c)), key=lambda c: c.name)
+    for n, child in enumerate(parts):
+        joined = child.name.endswith(" Joined")
+        child.name = f"{new.name} Joined" if joined else f"{new.name} {n + 1:02d}"
     if s.last_report.startswith(temp_name):
         s.last_report = new.name + s.last_report[len(temp_name):]
     return result
@@ -418,7 +480,7 @@ def file_name(s) -> str:
 
 
 def export_objects(root) -> list:
-    """The log meshes to export for a root (never the water surface)."""
+    """The log meshes to export for a root (never a water surface made by version 0.1)."""
     return [o for o in parts_of(root) if o.get(PART_TAG) != "WATER" and o.type == "MESH"]
 
 

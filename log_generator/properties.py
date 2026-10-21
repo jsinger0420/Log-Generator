@@ -13,9 +13,14 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, St
 from . import scales, species
 from .design import Design
 
-PROTO_LENGTH_KEYS = ("proto_length", "load_width", "pond_length", "pond_width")
+PROTO_LENGTH_KEYS = ("proto_length", "load_width")
 PROTO_DIAMETER_KEYS = ("proto_diameter", "stub_length")
-MODEL_KEYS = ("model_length", "model_diameter")
+MODEL_KEYS = ("model_length", "model_diameter", "load_width_model")
+# A floating log always shows at least this share of its diameter, so heavy
+# species still make a printable half log.
+MIN_ABOVE = 0.15
+# Arrangements renamed in 0.2.0, for presets and logs made with 0.1.0.
+LEGACY_ARRANGEMENT = {"SINGLE": "LOGS", "POND": "FLOAT"}
 
 # Set while a preset or unit change writes many values, so updates don't fire.
 _quiet = False
@@ -190,6 +195,17 @@ class LOGGEN_Settings(bpy.types.PropertyGroup):
                  mn=0.0, mx=30.0, precision=1, step=50)
     end_rough: BoolProperty(name="Rough Saw Cut", default=True, update=_changed,
                             description="Give the sawn ends a slightly uneven surface")
+    carve_rings: BoolProperty(
+        name="Carved Growth Rings", default=False, update=_changed,
+        description="Cut the growth rings into the sawn ends as shallow grooves, like "
+                    "weathered end grain, so they show on a print and take a drybrush. Adds "
+                    "triangles to the end faces")
+    carve_count: IntProperty(name="Rings", default=12, min=2, soft_max=40, update=_changed,
+                             description="Growth rings carved from the pith to the bark. Real "
+                                         "logs have far more; at model scale 8 to 20 read well")
+    carve_depth: _f("Groove Depth", 0.05, "Depth of the carved rings (model mm). Resin prints "
+                                          "show 0.03 mm; FDM needs 0.1 mm or more", mn=0.0,
+                    soft_max=0.5, precision=3, step=1)
 
     # ---- bark ----
     bark_depth: _f("Bark Depth", 1.0, "Depth of the bark furrows, times the species' typical "
@@ -202,23 +218,35 @@ class LOGGEN_Settings(bpy.types.PropertyGroup):
 
     # ---- arrangement ----
     arrangement: EnumProperty(
-        name="Arrangement", default="SINGLE", update=_changed,
-        description="One log, a stacked load for a log car or mill deck, or logs floating "
-                    "in a pond",
-        items=[("SINGLE", "Single Log", "One log, lying at the 3D cursor"),
-               ("STACK", "Stacked Load", "Logs stacked in a pyramid, for a log car or a "
-                                         "log deck at the mill"),
-               ("POND", "Log Pond", "Logs floating at the 3D cursor's height, scattered "
-                                    "over an area")])
-    log_count: IntProperty(name="Number of Logs", default=12, min=1, soft_max=100,
-                           update=_changed, description="How many logs to make")
-    length_var: _f("Length Variation", 10.0, "Logs vary in length by up to this, plus or minus",
-                   mn=0.0, mx=50.0, precision=0, step=100, subtype="PERCENTAGE")
-    diameter_var: _f("Diameter Variation", 20.0, "Logs vary in diameter by up to this, plus or "
-                                                 "minus", mn=0.0, mx=60.0, precision=0, step=100,
-                     subtype="PERCENTAGE")
-    load_width: _f("Load Width", 9.0, "Width of the load across the car or deck (feet or "
-                                      "metres, real-world)", mn=0.1, soft_max=40.0)
+        name="Arrangement", default="LOGS", update=_changed,
+        description="Separate logs, a stacked load for a log car or mill deck, or half logs "
+                    "to float on painted water",
+        items=[("LOGS", "Separate Logs", "One or more logs side by side at the 3D cursor, each "
+                                         "its own object"),
+               ("STACK", "Car Load", "Logs stacked in a pyramid, longest at the bottom, for a "
+                                     "log car or a log deck at the mill"),
+               ("FLOAT", "Floating Half Logs", "Logs cut flat at the waterline, to stand on a "
+                                               "surface painted as water; each its own object")])
+    log_count: IntProperty(name="Number of Logs", default=1, min=1, soft_max=100,
+                           update=_changed,
+                           description="How many logs to make. Each one is a little different: "
+                                       "length, diameter, taper, bark, limbs and flare")
+    length_var: _f("Length Variation", 10.0, "With several logs, lengths vary by up to this, "
+                                             "plus or minus", mn=0.0, mx=50.0, precision=0,
+                   step=100, subtype="PERCENTAGE")
+    diameter_var: _f("Diameter Variation", 20.0, "With several logs, diameters vary by up to "
+                                                 "this, plus or minus", mn=0.0, mx=60.0,
+                     precision=0, step=100, subtype="PERCENTAGE")
+    load_width_mode: EnumProperty(
+        name="Car Width By", default="PROTOTYPE", update=_changed,
+        description="Give the car's width at real size (scaled down) or as the model's width",
+        items=[("PROTOTYPE", "Prototype", "Real-world width in feet or metres"),
+               ("MODEL", "Model", "The model car's width in mm or inches")])
+    load_width: _f("Car Width", 9.0, "Width of the load across the car or deck (feet or "
+                                     "metres, real-world)", mn=0.1, soft_max=40.0)
+    load_width_model: _f("Car Width", 31.0, "Width of the load across the model car or deck "
+                                            "(model mm or inches)", mn=0.1, soft_max=200.0,
+                         precision=3)
     max_rows: IntProperty(name="Max Rows", default=4, min=1, soft_max=10, update=_changed,
                           description="Most rows of logs in the stack")
     end_stagger: _f("End Stagger", 5.0, "Logs slide along the load by up to this share of "
@@ -233,13 +261,15 @@ class LOGGEN_Settings(bpy.types.PropertyGroup):
                     "sink into each other slightly (Overlap) so they print as one piece")
     overlap: _f("Overlap", 0.15, "How far neighbouring logs sink into each other when joined "
                                  "(model mm)", mn=0.0, soft_max=2.0, precision=3, step=1)
-    pond_length: _f("Pond Length", 120.0, "Length of the area the logs float in (feet or "
-                                          "metres, real-world)", mn=1.0, soft_max=1000.0)
-    pond_width: _f("Pond Width", 60.0, "Width of the area the logs float in (feet or metres, "
-                                       "real-world)", mn=1.0, soft_max=1000.0)
-    water_plane: BoolProperty(name="Add Water Surface", default=False, update=_changed,
-                              description="Add a flat water surface the size of the area, at "
-                                          "the waterline, for renders")
+    float_mode: EnumProperty(
+        name="Waterline", default="SPECIES", update=_changed,
+        description="How much of each log shows above the water",
+        items=[("SPECIES", "Species", "As high as a green log of this species floats: light "
+                                      "cedar rides high, oak barely floats"),
+               ("HALF", "Half Log", "Cut through the middle"),
+               ("CUSTOM", "Custom", "Enter how much of the diameter shows")])
+    float_above: _f("Above Water", 40.0, "Share of the log's diameter above the water",
+                    mn=10.0, mx=90.0, precision=0, step=100, subtype="PERCENTAGE")
 
     # ---- build ----
     detail: EnumProperty(
@@ -290,14 +320,28 @@ class LOGGEN_Settings(bpy.types.PropertyGroup):
             knots=self.knots, stub_real=scales.diameter_to_mm(self.stub_length, u),
             bark_depth=self.bark_depth, bark_scale=self.bark_scale, damage=self.damage / 100.0,
             end_tilt=self.end_tilt, end_rough=self.end_rough, detail=self.detail,
+            carve_rings=self.carve_rings, carve_depth=self.carve_depth,
+            carve_count=self.carve_count,
             max_triangles=self.max_triangles, arrangement=self.arrangement,
             count=self.log_count, length_var=self.length_var / 100.0,
             diameter_var=self.diameter_var / 100.0,
         )
 
-    def model_mm(self, key: str) -> float:
-        """A prototype length setting (load width, pond size) as model mm."""
-        return scales.length_to_mm(getattr(self, key), self.proto_units) / self.scale_n()
+    def car_width_mm(self) -> float:
+        """The car (load) width in model mm, given at real size or model size."""
+        if self.load_width_mode == "MODEL":
+            return scales.model_to_mm(self.load_width_model, self.model_units)
+        return scales.length_to_mm(self.load_width, self.proto_units) / self.scale_n()
+
+    def above_water(self, radius: float) -> float:
+        """Share of a floating log's diameter above water (0 to 1) for the Waterline setting."""
+        from .arrange import above_water
+        if self.float_mode == "HALF":
+            return 0.5
+        if self.float_mode == "CUSTOM":
+            return self.float_above / 100.0
+        return min(max(above_water(radius, species.get(self.species).specific_gravity),
+                       MIN_ABOVE), 1.0 - MIN_ABOVE)
 
     def apply_typical_size(self) -> None:
         """Fill the size fields with the species' typical log, in the current units."""
@@ -335,6 +379,11 @@ class LOGGEN_Settings(bpy.types.PropertyGroup):
                 if key in values:
                     setattr(self, key, values[key])
                     setattr(self, key + "_prev", values[key])
+            values = dict(values)
+            if values.get("arrangement") in LEGACY_ARRANGEMENT:
+                if values["arrangement"] == "SINGLE":
+                    values["log_count"] = 1
+                values["arrangement"] = LEGACY_ARRANGEMENT[values["arrangement"]]
             for key, value in values.items():
                 if key in names and key not in units:
                     try:

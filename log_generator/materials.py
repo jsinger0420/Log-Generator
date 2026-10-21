@@ -1,9 +1,9 @@
-"""Materials for the logs: bark (from the vertex colours), end grain per species, and water.
+"""Materials for the logs: bark (from the vertex colours) and end grain per species.
 
 Bark colour is baked into each log's "Col" colour attribute by logmesh.py,
 so one shared "Log Bark" material serves every species and scale. The
 end grain material is procedural: growth rings from the "Rings" UV map
-and heartwood from the "EndGrain" UV map (see logmesh.py), one material
+(already wobbled) and heartwood from the "EndGrain" UV map (see logmesh.py), one material
 per species for its wood colours. Materials are made on first use and
 reused after that, so you can edit them and later logs pick up your
 changes.
@@ -17,7 +17,6 @@ from . import species
 from .logmesh import srgb_to_linear
 
 BARK_NAME = "Log Bark"
-WATER_NAME = "Log Pond Water"
 COLOUR_ATTR = "Col"
 UV_NORM = "EndGrain"
 UV_RINGS = "Rings"
@@ -99,25 +98,10 @@ def end_grain_material(key: str) -> bpy.types.Material:
     radius = node("ShaderNodeVectorMath", 200, -300, operation="LENGTH")
     links.new(uv_norm.outputs["UV"], radius.inputs[0])
 
-    # Wobble the rings a little so they aren't perfect circles.
-    scale = node("ShaderNodeVectorMath", 200, 200, operation="SCALE")
-    links.new(uv_rings.outputs["UV"], scale.inputs[0])
-    _socket(scale.inputs, "Scale").default_value = 0.06
-    wobble = node("ShaderNodeTexNoise", 400, 200)
-    links.new(scale.outputs["Vector"], wobble.inputs["Vector"])
-    wobble.inputs["Scale"].default_value = 1.5
-    wobble.inputs["Detail"].default_value = 3.0
-    centre = node("ShaderNodeMath", 600, 200, operation="SUBTRACT")
-    links.new(wobble.outputs["Fac"], centre.inputs[0])
-    centre.inputs[1].default_value = 0.5
-    amount = node("ShaderNodeMath", 800, 200, operation="MULTIPLY")
-    links.new(centre.outputs[0], amount.inputs[0])
-    amount.inputs[1].default_value = 2.4
-    wobbly = node("ShaderNodeMath", 800, 0, operation="ADD")
-    links.new(years.outputs["Value"], wobbly.inputs[0])
-    links.new(amount.outputs[0], wobbly.inputs[1])
+    # The Rings UV already holds the wobbled ring count (logmesh.py), so the
+    # rings line up with carved rings and the colours baked into the mesh.
     frac = node("ShaderNodeMath", 1000, 0, operation="FRACT")
-    links.new(wobbly.outputs[0], frac.inputs[0])
+    links.new(years.outputs["Value"], frac.inputs[0])
     late = node("ShaderNodeMapRange", 1150, 0, interpolation_type="SMOOTHSTEP")
     links.new(frac.outputs[0], late.inputs["Value"])
     late.inputs["From Min"].default_value = 0.5
@@ -138,17 +122,4 @@ def end_grain_material(key: str) -> bpy.types.Material:
     _socket(rings.inputs, "B", "RGBA").default_value = (0.72, 0.64, 0.58, 1.0)
     links.new(_socket(rings.outputs, "Result", "RGBA"), bsdf.inputs["Base Color"])
     bsdf.inputs["Roughness"].default_value = 0.75
-    return mat
-
-
-def water_material() -> bpy.types.Material:
-    """A dark, glossy pond water material."""
-    mat = bpy.data.materials.get(WATER_NAME)
-    if mat is not None:
-        return mat
-    mat = bpy.data.materials.new(WATER_NAME)
-    mat.diffuse_color = (0.03, 0.05, 0.04, 1.0)
-    bsdf = _principled(mat)
-    bsdf.inputs["Base Color"].default_value = (0.02, 0.04, 0.03, 1.0)
-    bsdf.inputs["Roughness"].default_value = 0.06
     return mat
