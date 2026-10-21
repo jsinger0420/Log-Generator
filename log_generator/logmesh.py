@@ -42,6 +42,7 @@ from .noise import smoothstep
 BARK, END_GRAIN = 0, 1
 MAX_RINGS = 22  # most growth rings drawn from pith to bark
 CARVE_POINTS = 8  # end-face rings of points per carved growth ring
+MIN_CAVITY = 0.3  # model mm: thinnest cavity radius worth hollowing
 
 
 @dataclass
@@ -72,6 +73,8 @@ class LogSpec:
     carve_rings: bool = False  # cut the growth rings into the sawn ends as shallow grooves
     carve_depth: float = 0.05  # model mm
     carve_count: int = 12  # rings carved from pith to bark
+    hollow: bool = False  # leave a closed cavity inside, to save resin or filament
+    wall: float = 1.0  # model mm: least thickness of wood and bark round the cavity
     knots_per_m: float = 1.0
     knot_real: float = 45.0  # limb diameter, full size mm
     stub_real: float = 25.0  # longest limb stub left, full size mm
@@ -426,6 +429,28 @@ def build(spec: LogSpec) -> LogMesh:
     M = np.concatenate(mats).astype(np.int64)
     C = srgb_to_linear(np.concatenate(cols))
     C = np.column_stack((C, np.ones(len(C))))
+    UVN, UVR = np.concatenate(uvn_l), np.concatenate(uvr_l)
+
+    # ---- hollow ----
+    hollow_info = {"hollow": False}
+    if spec.hollow:
+        end_margin = spec.wall + (spec.carve_depth if spec.carve_rings else 0.0) + rough_amp
+        cavity = _cavity(wood, x, theta, cy, cz, (a0, b0), (a1, b1), spec.wall, end_margin, L)
+        if cavity is None:
+            hollow_info["skipped"] = ("too thin to hollow with a "
+                                      f"{spec.wall:g} mm wall")
+        else:
+            cv, ct = cavity
+            ct = ct[:, [0, 2, 1]] + len(V)  # face into the cavity
+            V = np.concatenate((V, cv))
+            F = np.concatenate((F, ct))
+            M = np.concatenate((M, np.full(len(ct), BARK)))
+            dark = np.tile(np.array([[0.02, 0.015, 0.01, 1.0]]), (len(cv), 1))
+            C = np.concatenate((C, dark))
+            UVN = np.concatenate((UVN, np.zeros((len(cv), 2))))
+            UVR = np.concatenate((UVR, np.zeros((len(cv), 2))))
+            hollow_info = {"hollow": True, "cavity_volume": -volume(V, ct),
+                           "cavity_vertices": len(cv)}
 
     info = {
         "points_round": n_ar, "rings": n_al, "face_rings": m_cap,
@@ -435,8 +460,85 @@ def build(spec: LogSpec) -> LogMesh:
         "top_radius": float(R[-1].mean()),
         "bark_thickness": float(thick.mean()), "bark_depth": float(depth.mean()),
         "ends": end_info,
+        "axis_mid": (float(np.interp(0.5 * L, x, cy)), float(np.interp(0.5 * L, x, cz))),
+        **hollow_info,
     }
-    return LogMesh(V, F, M, C, np.concatenate(uvn_l), np.concatenate(uvr_l), info)
+    return LogMesh(V, F, M, C, UVN, UVR, info)
+
+
+def _cavity(wood, x, theta, cy, cz, plane0, plane1, wall, end_margin, L):
+    """The closed surface of the cavity inside a hollow log, faces pointing outward.
+
+    ``wood`` is the wood surface radius on the log's grid (rings along by
+    points round). The cavity keeps ``wall`` inside the wood everywhere
+    (and so at least that far inside the bark), and ``end_margin`` inside
+    each sawn end, following the ends' tilt and the log's bow. It is
+    coarser than the log: it is never seen. Returns (vertices, triangles),
+    or None when the log is too thin or short to hollow.
+    """
+    n_al1, n_ar = wood.shape
+    # The thinnest wood within a few points either way, so the coarser cavity
+    # never comes closer than ``wall`` between its own points.
+    k_ar = max(1, n_ar // 48)
+    k_al = max(1, (n_al1 - 1) // 64)
+    w = wood.copy()
+    for s in range(1, k_ar + 1):
+        w = np.minimum(w, np.minimum(np.roll(wood, s, axis=1), np.roll(wood, -s, axis=1)))
+    w2 = w.copy()
+    for s in range(1, k_al + 1):
+        w2[s:] = np.minimum(w2[s:], w[:-s])
+        w2[:-s] = np.minimum(w2[:-s], w[s:])
+    inner = w2 - wall
+    cols = np.arange(0, n_ar, k_ar)
+    th = theta[cols]
+    n_round = len(cols)
+    # Cavity ends: ``end_margin`` inside each sawn end, measured square to the end.
+    (a0, b0), (a1, b1) = plane0, plane1
+    r_end = max(float(inner[:, cols].max()), 0.0)
+    slope0 = math.hypot(a0, b0)
+    slope1 = math.hypot(a1, b1)
+    x_start = end_margin * math.sqrt(1 + slope0 * slope0) + slope0 * (r_end + abs(cy).max() + abs(cz).max())
+    x_end = L - end_margin * math.sqrt(1 + slope1 * slope1) - slope1 * (r_end + abs(cy).max() + abs(cz).max())
+    if x_end - x_start < 2 * wall:
+        return None
+    n_rows = max(2, min(64, int(math.ceil((x_end - x_start) / max(wall, 0.2)))) + 1)
+    xs = np.linspace(x_start, x_end, n_rows)
+    ri = np.stack([np.interp(xs, x, inner[:, c]) for c in cols], axis=1)  # (rows, round)
+    # The wood can be thinnest between rows too: take the least over each row's span.
+    lo = np.stack([np.minimum.reduce([np.interp(xs + d, x, inner[:, c]) for d in
+                                      np.linspace(-(xs[1] - xs[0]), xs[1] - xs[0], 5)])
+                   for c in cols], axis=1)
+    ri = np.minimum(ri, lo)
+    if ri.min() < MIN_CAVITY:
+        return None
+    ry = np.interp(xs, x, cy)[:, None] + ri * np.cos(th)[None, :]
+    rz = np.interp(xs, x, cz)[:, None] + ri * np.sin(th)[None, :]
+    rx = np.repeat(xs[:, None], n_round, axis=1)
+    verts = [np.stack((rx, ry, rz), -1).reshape(-1, 3)]
+    i = np.arange(n_rows - 1)[:, None]
+    j = np.arange(n_round)[None, :]
+    v00 = i * n_round + j
+    v01 = i * n_round + (j + 1) % n_round
+    v10 = (i + 1) * n_round + j
+    v11 = (i + 1) * n_round + (j + 1) % n_round
+    tris = [np.stack((v00, v01, v11), -1).reshape(-1, 3),
+            np.stack((v00, v11, v10), -1).reshape(-1, 3)]
+    # Flat end caps: a fan round the axis.
+    jj = np.arange(n_round)
+    jn = (jj + 1) % n_round
+    base = n_rows * n_round
+    for end, row in ((0, 0), (1, n_rows - 1)):
+        centre = np.array([[xs[row], float(np.interp(xs[row], x, cy)),
+                            float(np.interp(xs[row], x, cz))]])
+        verts.append(centre)
+        ring = row * n_round + jj
+        ringn = row * n_round + jn
+        fan = np.stack((ring, np.full(n_round, base), ringn), -1)
+        if end == 1:
+            fan = fan[:, [0, 2, 1]]
+        tris.append(fan)
+        base += 1
+    return np.concatenate(verts), np.concatenate(tris).astype(np.int64)
 
 
 def volume(verts: np.ndarray, tris: np.ndarray) -> float:

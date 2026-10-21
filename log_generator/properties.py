@@ -200,6 +200,18 @@ class LOGGEN_Settings(bpy.types.PropertyGroup):
         description="Cut the growth rings into the sawn ends as shallow grooves, like "
                     "weathered end grain, so they show on a print and take a drybrush. Adds "
                     "triangles to the end faces")
+    hollow: BoolProperty(
+        name="Hollow", default=True, update=_changed,
+        description="Leave the inside of each log empty, to save resin or filament and print "
+                    "faster. The walls are at least Wall Thickness everywhere, under the deepest "
+                    "bark furrow and behind the sawn ends")
+    wall: _f("Wall Thickness", 1.0, "Least thickness of wood and bark round the hollow inside "
+                                    "(model mm). Logs too thin for it are made solid",
+             mn=0.2, soft_max=5.0, precision=2, step=10)
+    drain_hole: _f("Drain Hole", 1.5, "Diameter of a hole from the underside of each hollow log "
+                                      "into the inside, so resin can drain out (model mm). 0 for "
+                                      "none. Half logs need none: their flat bottom is left open",
+                   mn=0.0, soft_max=5.0, precision=2, step=10)
     carve_count: IntProperty(name="Rings", default=12, min=2, soft_max=40, update=_changed,
                              description="Growth rings carved from the pith to the bark. Real "
                                          "logs have far more; at model scale 8 to 20 read well")
@@ -321,7 +333,8 @@ class LOGGEN_Settings(bpy.types.PropertyGroup):
             bark_depth=self.bark_depth, bark_scale=self.bark_scale, damage=self.damage / 100.0,
             end_tilt=self.end_tilt, end_rough=self.end_rough, detail=self.detail,
             carve_rings=self.carve_rings, carve_depth=self.carve_depth,
-            carve_count=self.carve_count,
+            carve_count=self.carve_count, hollow=self.hollow, wall=self.wall,
+            drain_hole=self.drain_hole,
             max_triangles=self.max_triangles, arrangement=self.arrangement,
             count=self.log_count, length_var=self.length_var / 100.0,
             diameter_var=self.diameter_var / 100.0,

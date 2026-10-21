@@ -8,7 +8,7 @@ A Blender 4.5+ add-on that builds model railroad logs: sawn to length with the l
 
 ## Install
 
-1. In Blender, open Edit > Preferences > Get Extensions, choose "Install from Disk" in the menu at the top right, and pick `log_generator-0.2.0.zip`.
+1. In Blender, open Edit > Preferences > Get Extensions, choose "Install from Disk" in the menu at the top right, and pick `log_generator-0.3.0.zip`.
 2. Open the 3D Viewport sidebar (N) and the **Logs** tab.
 
 ## Use
@@ -23,8 +23,9 @@ A Blender 4.5+ add-on that builds model railroad logs: sawn to length with the l
    - **Separate Logs** lie side by side along Y on the 3D cursor. Several logs are held by an empty ("Logs"), but each log is its own object (Logs 01, Logs 02, ...).
    - **Car Load** makes a pyramid on an empty at the 3D cursor (the car deck): logs side by side across the **Car Width**, each row resting in the row below, the **longest logs on the bottom**, alternate butts turned end for end, ends staggered. Give the car width at real size (feet or metres) or as the model car's width (mm or inches). **Join for Printing** unions the load into one solid (logs sink into each other by **Overlap**); otherwise each log is its own object.
    - **Floating Half Logs** cuts each log flat at its waterline and closes the cut, so the flat face stands on the 3D cursor, ready to glue onto a flat surface painted as water. The **Waterline** is the species' own (a green Douglas fir shows about 40 % of its diameter, cedar more, oak barely floats; every log keeps at least 15 % so it prints), **Half Log**, or a **Custom** percentage. Each half log is its own object.
-5. **Generate Logs.** Every Generate adds new logs with a new random seed (shown in Build Options; lock it to repeat). Check the summary: model and prototype size, taper, board feet (Doyle and Scribner), bark relief in the model, carved ring spacing, triangle count, how many logs fit on the car, and how much of a half log shows above the water.
-6. **Export STL** writes the selected logs in millimetres. Select a group's empty to export all its logs, or click single logs to export just those. **One File per Log** (on by default) writes each log to its own file, named after the file name plus the log's name.
+5. **Hollow** (on by default) leaves the inside of each log empty to save resin or filament. **Wall Thickness** (default 1 mm) is the least thickness of wood and bark anywhere: under the deepest bark furrow, and behind each sawn end (plus any carved rings and saw roughness). Full logs get a **Drain Hole** (default 1.5 mm, 0 for none) on the underside halfway along, so resin drains out; in a car load each log's hole faces down. Half logs need none: the waterline cut leaves their bottom open into the hollow. Logs too thin for the wall are made solid, and the summary and a warning say so. The summary also shows about how much material hollowing saves.
+6. **Generate Logs.** Every Generate adds new logs with a new random seed (shown in Build Options; lock it to repeat). Check the summary: model and prototype size, taper, board feet (Doyle and Scribner), bark relief in the model, carved ring spacing, triangle count, how many logs fit on the car, and how much of a half log shows above the water.
+7. **Export STL** writes the selected logs in millimetres. Select a group's empty to export all its logs, or click single logs to export just those. **One File per Log** (on by default) writes each log to its own file, named after the file name plus the log's name.
 
 **Changing logs you made:** select them and press **Load Settings From Selected**, adjust, then **Regenerate Selected**. Lock the seed first to keep the same look. Whole setups can be saved as presets from the menu at the top.
 
@@ -47,10 +48,10 @@ Both are made on first use and reused, so you can edit them.
 | `scales.py` | Scales, unit conversion, log rules. Plain Python |
 | `noise.py` | Seeded gradient, fBm and Worley noise in numpy |
 | `bark.py` | The bark styles, resolution-aware |
-| `logmesh.py` | One log as a closed mesh: taper, flare, bark, limbs, sawn ends. Plain Python + numpy |
+| `logmesh.py` | One log as a closed mesh: taper, flare, bark, limbs, sawn ends, hollow inside. Plain Python + numpy |
 | `arrange.py` | Car loads, rows, how high logs float. Plain Python |
 | `design.py` | Panel settings to per-log specs, summary. Plain Python |
-| `build.py` | Makes the Blender objects, joins loads, cuts half logs, stores settings, exports STL |
+| `build.py` | Makes the Blender objects, joins loads, cuts half logs and drain holes, stores settings, exports STL |
 | `materials.py` | Bark and end grain materials |
 | `properties.py`, `operators.py`, `ui.py` | Settings, buttons and the sidebar panel |
 | `preset_store.py` | Saved log presets (JSON) |

@@ -107,6 +107,14 @@ class LOGGEN_PT_main(_Panel, bpy.types.Panel):
             row.label(text=f"Carved rings {m['carve_pitch']:.2f} mm apart, "
                            f"{s.carve_depth:.3f} mm deep",
                       icon="ERROR" if m["carve_pitch"] < 0.15 else "NONE")
+        if s.hollow:
+            if m["hollow_ok"]:
+                box.label(text=f"Hollow, {s.wall:g} mm walls: about "
+                               f"{m['hollow_saving'] * 100:.0f}% less material")
+            else:
+                row = box.row()
+                row.alert = True
+                row.label(text=f"Too thin for {s.wall:g} mm walls: printed solid", icon="ERROR")
         r = 0.25 * (m["diameter"] + m["top"])
         if s.arrangement == "STACK":
             width = s.car_width_mm()
@@ -266,6 +274,34 @@ class LOGGEN_PT_arrange(_Panel, bpy.types.Panel):
             hint.label(text="Each log is its own object.")
 
 
+class LOGGEN_PT_hollow(_Panel, bpy.types.Panel):
+    """Hollow logs: wall thickness and a drain hole"""
+
+    bl_label = "Hollow"
+    bl_parent_id = "LOGGEN_PT_main"
+
+    def draw_header(self, context):
+        """The on/off checkbox in the panel header."""
+        self.layout.prop(_s(context), "hollow", text="")
+
+    def draw(self, context):
+        """Wall thickness and drain hole (greyed out when solid)."""
+        s = _s(context)
+        col = self.layout.column()
+        col.enabled = s.hollow
+        col.prop(s, "wall", text="Wall Thickness (mm)")
+        sub = col.column()
+        sub.enabled = s.arrangement != "FLOAT"
+        sub.prop(s, "drain_hole", text="Drain Hole (mm)")
+        hint = col.column()
+        hint.scale_y = 0.8
+        if s.arrangement == "FLOAT":
+            hint.label(text="Half logs are left open underneath.", icon="INFO")
+        else:
+            hint.label(text="The drain hole is on the underside,", icon="INFO")
+            hint.label(text="halfway along the log.")
+
+
 class LOGGEN_PT_build(_Panel, bpy.types.Panel):
     """Mesh detail, triangle budget and the random seed"""
 
@@ -288,5 +324,5 @@ class LOGGEN_PT_build(_Panel, bpy.types.Panel):
 classes = (
     LOGGEN_MT_presets,
     LOGGEN_PT_main, LOGGEN_PT_species, LOGGEN_PT_shape, LOGGEN_PT_bark, LOGGEN_PT_arrange,
-    LOGGEN_PT_build,
+    LOGGEN_PT_hollow, LOGGEN_PT_build,
 )

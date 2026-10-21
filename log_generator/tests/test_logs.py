@@ -193,6 +193,30 @@ class TestLogMesh(unittest.TestCase):
         years = np.hypot(m.uv_rings[:, 0], m.uv_rings[:, 1])
         self.assertTrue(8.0 < years.max() < 13.0)
 
+    def test_hollow(self):
+        """A hollow log is two closed shells, holds the wall everywhere and weighs less."""
+        solid = logmesh.build(small_spec())
+        hollow = logmesh.build(small_spec(hollow=True, wall=1.0))
+        self.assertTrue(hollow.info["hollow"])
+        self.assertEqual(logmesh.open_edges(hollow.triangles), 0)
+        v_solid = logmesh.volume(solid.vertices, solid.triangles)
+        v_hollow = logmesh.volume(hollow.vertices, hollow.triangles)
+        self.assertLess(v_hollow, 0.8 * v_solid)
+        self.assertGreater(v_hollow, 0.0)
+        k = hollow.info["cavity_vertices"]
+        inner, outer = hollow.vertices[-k:], hollow.vertices[:-k]
+        nearest = np.full(len(inner), np.inf)
+        for i in range(0, len(outer), 2000):
+            d = np.linalg.norm(inner[:, None, :] - outer[None, i:i + 2000, :], axis=2).min(axis=1)
+            nearest = np.minimum(nearest, d)
+        self.assertGreaterEqual(nearest.min(), 1.0 - 1e-6)
+
+    def test_hollow_too_thin(self):
+        """A log too thin for the wall stays solid and says so."""
+        m = logmesh.build(small_spec(d_butt=2.0, d_top=1.8, hollow=True, wall=1.0))
+        self.assertFalse(m.info["hollow"])
+        self.assertIn("skipped", m.info)
+
     def test_seed_repeats(self):
         """The same seed builds the same log; another seed a different one."""
         a = logmesh.build(small_spec(seed=3))
@@ -245,6 +269,14 @@ class TestDesign(unittest.TestCase):
         """Zero sizes are refused with a message."""
         self.assertTrue(design.errors(design.Design(length_real=0)))
         self.assertFalse(design.errors(design.Design()))
+
+    def test_hollow_estimate(self):
+        """Hollowing saves material on a big log, and is refused on a thin one."""
+        m = design.summary(design.Design())
+        self.assertTrue(m["hollow_ok"])
+        self.assertTrue(0.2 < m["hollow_saving"] < 0.9)
+        thin = design.summary(design.Design(diameter_real=4 * 25.4))
+        self.assertFalse(thin["hollow_ok"])
 
     def test_summary(self):
         """The summary gives model sizes and a positive board-foot count."""

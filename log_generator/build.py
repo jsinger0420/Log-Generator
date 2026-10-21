@@ -188,13 +188,18 @@ def _centre_along(lm: logmesh.LogMesh, length: float) -> None:
     lm.vertices[:, 0] -= 0.5 * length
 
 
-def _clean(mesh) -> int:
-    """Merge duplicate points and fix normals after a Boolean; returns the open-edge count."""
+def _clean(mesh, merge: bool = True) -> int:
+    """Tidy a Boolean result, merging duplicate points if ``merge``; returns open edges.
+
+    Merging can pinch the walls of a small drain hole, so cuts don't merge.
+    Normals are left as the Boolean made them: recalculating would turn a
+    closed hollow inside outward, filling it.
+    """
     bm = bmesh.new()
     try:
         bm.from_mesh(mesh)
-        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=1e-5)
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+        if merge:
+            bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=1e-5)
         open_edges = sum(1 for e in bm.edges if not e.is_manifold)
         bm.to_mesh(mesh)
     finally:
@@ -321,23 +326,53 @@ def generate(context, progress=None) -> BuildResult:
     tri_count = 0
     lone, group = NAMES[arrangement]
     above_pct = []
+    too_thin = 0
     for done, i in enumerate(sorted(places)):
         spec = specs[i]
         lm = logmesh.build(spec)
         _centre_along(lm, spec.length)
         mesh = log_mesh(TEMP_NAME, lm, d.species)
+        hollow = bool(lm.info.get("hollow"))
+        if spec.hollow and not hollow:
+            too_thin += 1
+        ay, az = lm.info["axis_mid"]
+        r_out = float(np.hypot(lm.vertices[:, 1], lm.vertices[:, 2]).max())
+        roll = places[i].roll
+        if roll:
+            # Turn the log on its axis in the mesh itself, so its underside (and
+            # drain hole) faces down in the load.
+            mesh.transform(_rotation_x(roll))
+            ay, az = (ay * math.cos(roll) - az * math.sin(roll),
+                      ay * math.sin(roll) + az * math.cos(roll))
+            places[i].roll = 0.0
+        open_edges = 0
         if arrangement == "FLOAT":
             f = s.above_water(radii[i])
             above_pct.append(f)
             cut_z = radii[i] * (1.0 - 2.0 * f)
-            open_edges = cut_at_waterline(mesh, cut_z)
-            if open_edges:
-                warnings.append(f"Half log {done + 1} has {open_edges} open edges and may not "
-                                "slice cleanly.")
+            k = lm.info.get("cavity_vertices", 0)
+            cavity_low = float(lm.vertices[-k:, 2].min()) if hollow else 0.0
+            if hollow:
+                # Cut away everything below the waterline; the cut opens the hollow
+                # inside, leaving an open bottom that drains and saves material.
+                big = 2.0 * r_out + spec.length
+                open_edges = cut_away(mesh, _box(-big, big, -big, big, cut_z - big, cut_z))
+                if cut_z < cavity_low and d.drain_hole > 0:
+                    # So much shows above water that the cut misses the hollow inside.
+                    open_edges = cut_away(mesh, _cylinder(0.0, ay, cut_z - 1.0, az,
+                                                          d.drain_hole / 2))
+            else:
+                open_edges = cut_at_waterline(mesh, cut_z)
             mesh.transform(_translation(0.0, 0.0, -cut_z))
             base_z = 0.0
         else:
-            base_z = -float(lm.vertices[:, 2].min())  # rest on the ground
+            if hollow and d.drain_hole > 0:
+                open_edges = cut_away(mesh, _cylinder(0.0, ay, -r_out - 1.0, az,
+                                                      d.drain_hole / 2))
+            base_z = -min(v.co.z for v in mesh.vertices)  # rest on the ground
+        if open_edges:
+            warnings.append(f"Log {done + 1} has {open_edges} open edges and may not "
+                            "slice cleanly.")
         tri_count += len(mesh.polygons)
         obj = _new_object(TEMP_NAME, mesh, coll)  # named once it's placed
         obj["log_length_mm"] = round(spec.length, 3)
@@ -365,7 +400,7 @@ def generate(context, progress=None) -> BuildResult:
             obj.parent = root
             if arrangement == "STACK":
                 obj.location = (p.x, p.y, p.z)
-                obj.rotation_euler = (p.roll, 0.0, math.pi if p.flip else 0.0)
+                obj.rotation_euler = (0.0, 0.0, math.pi if p.flip else 0.0)  # roll is in the mesh
             else:
                 obj.location = (p.x, p.y, base_z)
             obj[PART_TAG] = "LOG"
@@ -391,6 +426,9 @@ def generate(context, progress=None) -> BuildResult:
             info["triangles"] = tri_count
     if above_pct:
         info["above_water"] = (min(above_pct), max(above_pct))
+    if too_thin:
+        warnings.append(f"{too_thin} of {len(logs)} logs are too thin for {d.wall:g} mm walls "
+                        "and were made solid.")
 
     # ---- record and report ----
     if s.seed != seed:
@@ -417,6 +455,83 @@ def _translation(x: float, y: float, z: float):
     """A translation matrix."""
     from mathutils import Matrix
     return Matrix.Translation((x, y, z))
+
+
+def _rotation_x(angle: float):
+    """A rotation matrix about the X axis (the log's own axis)."""
+    from mathutils import Matrix
+    return Matrix.Rotation(angle, 4, "X")
+
+
+def _box(x0, x1, y0, y1, z0, z1):
+    """A closed box as (vertices, triangles)."""
+    v = np.array([[x, y, z] for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)], dtype=float)
+    q = [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)]
+    t = [(a, b, c) for a, b, c, d_ in q for a, b, c in ((a, b, c), (a, c, d_))]
+    return v, np.array(t, dtype=np.int64)
+
+
+def _cylinder(x, y, z0, z1, r, n=24):
+    """A closed upright cylinder as (vertices, triangles)."""
+    a = np.arange(n) * 2 * math.pi / n
+    ring = np.column_stack((x + r * np.cos(a), y + r * np.sin(a)))
+    v = np.concatenate((np.column_stack((ring, np.full(n, z0))),
+                        np.column_stack((ring, np.full(n, z1))),
+                        [[x, y, z0], [x, y, z1]]))
+    j = np.arange(n)
+    jn = (j + 1) % n
+    side = np.concatenate((np.stack((j, jn, jn + n), -1), np.stack((j, jn + n, j + n), -1)))
+    bottom = np.stack((jn, j, np.full(n, 2 * n)), -1)
+    top = np.stack((j + n, jn + n, np.full(n, 2 * n + 1)), -1)
+    return v, np.concatenate((side, bottom, top)).astype(np.int64)
+
+
+def cut_away(mesh, cutter) -> int:
+    """Subtract a closed (vertices, triangles) shape from ``mesh`` in place.
+
+    Uses a Boolean modifier (Manifold, else Exact) on a temporary object.
+    Returns the open-edge count after (0 when closed).
+    """
+    coll = bpy.context.scene.collection
+    obj = bpy.data.objects.new("_log_generator_cut", mesh)
+    cut_mesh = mesh_from_arrays("_log_generator_cutter", *cutter)
+    cut_obj = bpy.data.objects.new("_log_generator_cutter", cut_mesh)
+    coll.objects.link(obj)
+    coll.objects.link(cut_obj)
+    try:
+        def run(solver):
+            obj.modifiers.clear()
+            mod = obj.modifiers.new("Cut", "BOOLEAN")
+            mod.operation = "DIFFERENCE"
+            mod.operand_type = "OBJECT"
+            mod.object = cut_obj
+            mod.solver = solver
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            depsgraph.update()
+            ev = obj.evaluated_get(depsgraph)
+            return bpy.data.meshes.new_from_object(ev, preserve_all_data_layers=True,
+                                                   depsgraph=depsgraph)
+        try:
+            new = run("MANIFOLD")
+        except TypeError:
+            new = run("EXACT")
+        if len(new.polygons) == 0:
+            bpy.data.meshes.remove(new)
+            new = run("EXACT")
+        obj.modifiers.clear()
+        # Copy the result back into ``mesh`` so callers keep their reference.
+        bm = bmesh.new()
+        try:
+            bm.from_mesh(new)
+            bm.to_mesh(mesh)
+        finally:
+            bm.free()
+        bpy.data.meshes.remove(new)
+    finally:
+        bpy.data.objects.remove(obj)
+        bpy.data.objects.remove(cut_obj)
+        bpy.data.meshes.remove(cut_mesh)
+    return _clean(mesh, merge=False)
 
 
 def _remove_tree(obj) -> None:

@@ -46,6 +46,9 @@ class Design:
     carve_rings: bool = False
     carve_depth: float = 0.05  # model mm
     carve_count: int = 12
+    hollow: bool = True
+    wall: float = 1.0  # model mm
+    drain_hole: float = 1.5  # model mm diameter, 0 for none
     arrangement: str = "LOGS"  # "LOGS" (separate logs), "STACK" or "FLOAT" (half logs)
     count: int = 1
     length_var: float = 0.0  # 0 to 1, plus or minus
@@ -107,6 +110,7 @@ def make_spec(d: Design, length: float, diameter: float, flare: float, seed: int
         ridge=sp.ridge, furrow=sp.furrow, inner_bark=sp.inner_bark, sapwood=sp.sapwood,
         heartwood=sp.heartwood, heart_frac=sp.heart_frac, carve_rings=d.carve_rings,
         carve_depth=d.carve_depth, carve_count=max(2, int(d.carve_count)),
+        hollow=d.hollow, wall=d.wall,
         ring_mm_real=sp.ring_mm, knots_per_m=sp.knots_per_m * d.knots, knot_real=sp.knot_mm,
         stub_real=d.stub_real, damage=d.damage, end_tilt_deg=d.end_tilt, end_rough=d.end_rough,
         around_spacing=around, along_spacing=along, max_triangles=d.max_triangles, seed=seed,
@@ -174,6 +178,7 @@ def summary(d: Design) -> dict:
                                                     0.85 * bark_real * 2) / n,
         "points_round": n_ar, "rings": n_al,
         "carve_pitch": max(D / 2 - bark_real / n, 0.0) / max(d.carve_count, 1),
+        **hollow_estimate(d, L, D, top),
         "flare_real": real_D * (1 + d.sp.flare * d.flare_amount) if d.flare_chance > 0 else 0.0,
     }
 
@@ -181,3 +186,21 @@ def summary(d: Design) -> dict:
 def mid_radius(spec: LogSpec) -> float:
     """A log's radius at mid-length (model mm), outside the bark, before bark relief."""
     return 0.25 * (spec.d_butt + spec.d_top)
+
+
+def hollow_estimate(d: Design, length: float, diameter: float, top: float) -> dict:
+    """Whether the nominal log can be hollowed, and about how much material that saves.
+
+    Returns ``hollow_ok`` (False when the wood is too thin for the wall)
+    and ``hollow_saving`` (0 to 1, the share of the solid log's volume).
+    """
+    from .logmesh import MIN_CAVITY
+    if not d.hollow:
+        return {"hollow_ok": False, "hollow_saving": 0.0}
+    r = 0.25 * (diameter + top)
+    bark = min(d.sp.bark_thickness_mm / d.scale_n, 0.3 * r)
+    ri = r - bark - d.wall
+    inside = length - 2 * d.wall
+    if ri < MIN_CAVITY or inside < 2 * d.wall:
+        return {"hollow_ok": False, "hollow_saving": 0.0}
+    return {"hollow_ok": True, "hollow_saving": (ri / r) ** 2 * inside / length}
