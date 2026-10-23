@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "log_generator"
-version = "0.3.0"
+version = "0.3.1"
 name = "Log Generator"
-tagline = "Model railroad logs with real bark: separate logs, car loads, half logs"
+tagline = "Model railroad logs: single logs, car loads and half logs"
 maintainer = "John <john@singerlinks.com>"
 type = "add-on"
 
