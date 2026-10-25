@@ -17,3 +17,6 @@ venv/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Blog post and its images (kept locally, not part of the add-on)
+blog/
