@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "log_generator"
-version = "0.3.1"
+version = "0.3.2"
 name = "Log Generator"
 tagline = "Model railroad logs: single logs, car loads and half logs"
 maintainer = "John <john@singerlinks.com>"
@@ -10,7 +10,7 @@ type = "add-on"
 blender_version_min = "4.5.0"
 
 license = ["SPDX:GPL-3.0-or-later"]
-tags = ["Add Mesh", "Import-Export"]
+tags = ["Add Mesh"]
 
 [permissions]
 files = "Export logs as STL files and save presets"

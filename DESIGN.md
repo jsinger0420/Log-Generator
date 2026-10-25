@@ -2,7 +2,7 @@
 
 Blender add-on (extension) that generates 3D models of logs for model railroads: logs for log cars, half logs to float on painted water, and logs for the sawmill. Owner: John Singer (john@singerlinks.com).
 
-- **Current version:** 0.3.1
+- **Current version:** 0.3.2
 - **Source and Git repo:** `C:\Users\Jsing\BLENDERWORKBENCHES\LOG` (branch `main`). The package is in `log_generator\`; installable zips (`log_generator-0.x.0.zip`) are committed at the repo root; sample renders are in `samples\`.
 - **Install:** Blender → Edit → Preferences → Get Extensions → Install from Disk → the latest zip. Panel: 3D Viewport sidebar (N) → **Logs** tab.
 - **Blender:** manifest minimum 4.5.0. Tested with Blender 5.1 run as a Python module (`pip install bpy`), headless; not yet tried in a normal Blender window or in 4.5.
@@ -97,10 +97,11 @@ A mesh can only show detail a few points wide; finer noise aliases into horizont
 - **0.2.0** — Pond scatter replaced by floating half logs; separate multi-log batches (each its own object, per-log variation); car width real or model; longest logs at the bottom; carved growth rings; ring colours baked into vertex colours; export per log.
 - **0.3.0** — Hollow logs (default on, wall 1 mm), drain holes, open-bottomed hollow half logs; fix for normals being recalculated after Booleans.
 - **0.3.1** — Packaging fix: the manifest tagline was 71 characters and Blender's extension installer allows 64, so 0.2.0 and 0.3.0 zips are rejected by Install from Disk. The zip is now built and validated with Blender's own extension tool (`blender_ext.py build` / `validate`, the same as `blender --command extension build`) and test-installed as an extension. No feature changes.
+- **0.3.2** — Extensions platform review: removed the `Import-Export` tag (the add-on generates meshes; STL export alone doesn't make it an import/export add-on). Tags are now just `Add Mesh`. No feature changes.
 
 ## Packaging
 
-Build the zip with Blender's extension tool from the repo root: `blender --command extension build --source-dir log_generator --output-dir .`, then `blender --command extension validate log_generator-<version>.zip`. It honours the manifest's `paths_exclude_pattern` (no tests, no `__pycache__`) and names the zip `log_generator-<version>.zip`. Manifest rules to remember: `tagline` at most 64 characters and not ending in punctuation; `tags` from Blender's list.
+Build the zip with Blender's extension tool from the repo root: `blender --command extension build --source-dir log_generator --output-dir .`, then `blender --command extension validate log_generator-<version>.zip`. It honours the manifest's `paths_exclude_pattern` (no tests, no `__pycache__`) and names the zip `log_generator-<version>.zip`. Manifest rules to remember: `tagline` at most 64 characters and not ending in punctuation; `tags` from Blender's list, and only ones that describe what the add-on is for (reviewers rejected `Import-Export`).
 
 ## Known limitations / ideas
 

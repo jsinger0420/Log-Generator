@@ -8,7 +8,7 @@ A Blender 4.5+ add-on that builds model railroad logs: sawn to length with the l
 
 ## Install
 
-1. In Blender, open Edit > Preferences > Get Extensions, choose "Install from Disk" in the menu at the top right, and pick `log_generator-0.3.1.zip`.
+1. In Blender, open Edit > Preferences > Get Extensions, choose "Install from Disk" in the menu at the top right, and pick `log_generator-0.3.2.zip`.
 2. Open the 3D Viewport sidebar (N) and the **Logs** tab.
 
 ## Use
